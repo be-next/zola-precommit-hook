@@ -1,0 +1,38 @@
+#!/opt/homebrew/bin/python3
+
+import re
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+# Get the list of modified files
+cmd = "git diff --cached --name-only --diff-filter=M"
+files = subprocess.check_output(cmd.split()).decode().split()
+
+# Filtering to keep only .md files and ignore _index.md
+markdown_files = [f for f in files if f.endswith(".md") and not f.endswith("_index.md")]
+
+for md_file in markdown_files:
+    path = Path(md_file)
+    content = path.read_text()
+    front_matter = re.search(r"^---(.*?)---", content, re.DOTALL)
+    if front_matter:
+        front_content = front_matter.group(1)
+        last_modified_date = datetime.fromtimestamp(path.stat().st_mtime).strftime(
+            "%Y-%m-%d"
+        )
+
+        # Updated field already exists
+        if "updated =" in front_content:
+            new_content = re.sub(
+                r"(updated = ).*$", f"\\1{last_modified_date}", front_content
+            )
+        else:
+            new_content = front_content + f"\nupdated = {last_modified_date}"
+
+        # Replace the original content with the updated one
+        updated_content = content.replace(front_content, new_content)
+        path.write_text(updated_content)
+
+        # Add modified file to the Git index
+        subprocess.run(["git", "add", md_file])
