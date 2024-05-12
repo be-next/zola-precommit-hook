@@ -1,38 +1,123 @@
-#!/opt/homebrew/bin/python3
+#!python3
 
-import re
+import logging
 import subprocess
-from datetime import datetime
+from datetime import date
 from pathlib import Path
 
-# Get the list of modified files
-cmd = "git diff --cached --name-only --diff-filter=M"
-files = subprocess.check_output(cmd.split()).decode().split()
+import frontmatter
+from frontmatter.default_handlers import TOMLHandler
 
-# Filtering to keep only .md files and ignore _index.md
-markdown_files = [f for f in files if f.endswith(".md") and not f.endswith("_index.md")]
+# Set up logging
+logging.basicConfig(
+    filename="pre_commit.log",
+    level=logging.DEBUG,
+    format="%(asctime)s:%(levelname)s:%(message)s",
+)
 
-for md_file in markdown_files:
-    path = Path(md_file)
-    content = path.read_text()
-    front_matter = re.search(r"^---(.*?)---", content, re.DOTALL)
-    if front_matter:
-        front_content = front_matter.group(1)
-        last_modified_date = datetime.fromtimestamp(path.stat().st_mtime).strftime(
-            "%Y-%m-%d"
-        )
 
-        # Updated field already exists
-        if "updated =" in front_content:
-            new_content = re.sub(
-                r"(updated = ).*$", f"\\1{last_modified_date}", front_content
-            )
-        else:
-            new_content = front_content + f"\nupdated = {last_modified_date}"
+def get_commited_files() -> list:
+    """Get the list of modified files. Keeps only .md files and ignore _index.md"""
+    """return: list of .md file names"""
+    try:
+        cmd = "git diff --cached --name-only --diff-filter=M"
+        # cmd = "ls --color=never ./test/index.md"
+        files = subprocess.check_output(cmd.split()).decode().split()
+        target_files = [
+            f for f in files if f.endswith(".md") and not f.endswith("_index.md")
+        ]
+        logging.debug(f"Modified .md files: {target_files}")
+        return target_files
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to get committed files: {e}")
+        return []
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        return []
 
-        # Replace the original content with the updated one
-        updated_content = content.replace(front_content, new_content)
-        path.write_text(updated_content)
 
-        # Add modified file to the Git index
+def get_last_modified_date(path: Path) -> date:
+    """Get the last modified date of a file"""
+    """path: Path object"""
+    """return: date object"""
+    try:
+        last_modified_date = date.fromtimestamp(path.stat().st_mtime)
+        return last_modified_date
+    except FileNotFoundError:
+        logging.error(f"File not found: {path}")
+        return None
+
+
+def get_post_content(path: Path) -> frontmatter.Post:
+    """Get the content of a post"""
+    """path: Path object"""
+    """return: frontmatter.Post object"""
+    try:
+        file_content = path.read_text()
+        post = frontmatter.loads(file_content, handler=TOMLHandler())
+        logging.debug(f"Post content retrieved from {path}")
+        return post
+    except FileNotFoundError:
+        logging.error(f"File not found: {path}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        return None
+
+
+def update_post_metadata(
+    post: frontmatter.Post, last_modified_date: date
+) -> frontmatter.Post:
+    """Update the metadata of a post"""
+    """post: frontmatter.Post object"""
+    """last_modified_date: date object"""
+    """return: frontmatter.Post object"""
+    post.metadata["updated"] = last_modified_date
+    logging.debug(f"Post metadata updated with date {last_modified_date}")
+    return post
+
+
+def save_post_content(path: Path, post: frontmatter.Post):
+    """Save the content of a post"""
+    """path: Path object"""
+    """post: frontmatter.Post object"""
+    try:
+        path.write_text(frontmatter.dumps(post))
+        logging.debug(f"Post content saved to {path}")
+    except FileNotFoundError as e:
+        logging.error(f"Failed to save post content to {path}: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+
+
+def add_file_to_git_index(md_file: str):
+    """Add a file to the Git index"""
+    """md_file: file name"""
+    try:
         subprocess.run(["git", "add", md_file])
+        logging.debug(f"File {md_file} added to Git index")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to add file {md_file} to Git index: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+
+
+def main():
+    try:
+        for file in get_commited_files():
+            path = Path(file)
+            last_modified_date = get_last_modified_date(path)
+            if last_modified_date:
+                post = get_post_content(path)
+                if post:
+                    post = update_post_metadata(post, last_modified_date)
+                    save_post_content(path, post)
+                    add_file_to_git_index(file)
+    except Exception as e:
+        logging.error(f"Error in main function: {e}")
+
+
+if __name__ == "__main__":
+    logging.info("Starting pre-commit hook")
+    main()
+    logging.info("Pre-commit hook finished")
